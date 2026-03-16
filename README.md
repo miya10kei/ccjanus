@@ -10,6 +10,12 @@ Claude Code PreToolUse Hook for auto-approving bash commands. When piped/compoun
 mise use ubi:miya10kei/ccjanus
 ```
 
+### Homebrew
+
+```bash
+brew install miya10kei/ccjanus/ccjanus
+```
+
 ### Build from source
 
 ```bash
