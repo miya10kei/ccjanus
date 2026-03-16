@@ -172,9 +172,9 @@ mod tests {
         let (allow, deny) = load_permissions_from_file(&path).unwrap();
         assert_eq!(allow.len(), 2);
         assert_eq!(deny.len(), 1);
-        assert_eq!(allow[0].prefix, "ls");
-        assert_eq!(allow[1].prefix, "cat");
-        assert_eq!(deny[0].prefix, "rm");
+        assert_eq!(allow[0].segments, vec!["ls ", ""]);
+        assert_eq!(allow[1].segments, vec!["cat ", ""]);
+        assert_eq!(deny[0].segments, vec!["rm ", ""]);
     }
 
     #[test]
@@ -191,7 +191,7 @@ mod tests {
 
         let (allow, _deny) = load_permissions_from_file(&path).unwrap();
         assert_eq!(allow.len(), 1);
-        assert_eq!(allow[0].prefix, "ls");
+        assert_eq!(allow[0].segments, vec!["ls ", ""]);
     }
 
     #[test]
@@ -221,6 +221,6 @@ mod tests {
         std::env::remove_var("CLAUDE_CONFIG_DIR");
 
         assert!(!perm_set.allow.is_empty());
-        assert_eq!(perm_set.allow[0].prefix, "ls");
+        assert_eq!(perm_set.allow[0].segments, vec!["ls ", ""]);
     }
 }
