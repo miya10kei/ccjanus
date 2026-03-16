@@ -14,8 +14,7 @@ pub struct ToolInput {
 #[derive(Clone, Debug, PartialEq)]
 pub struct PermissionRule {
     pub original: String,
-    pub prefix: String,
-    pub is_wildcard: bool,
+    pub segments: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

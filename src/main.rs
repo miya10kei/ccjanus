@@ -89,17 +89,21 @@ fn run_doctor_mode() -> Result<()> {
 
     println!("\nAllow rules ({}):", permissions.allow.len());
     for rule in &permissions.allow {
+        let wildcard = rule.segments.len() > 1;
+        let pattern = rule.segments.join("*");
         println!(
-            "  {} -> prefix: '{}', wildcard: {}",
-            rule.original, rule.prefix, rule.is_wildcard
+            "  {} -> pattern: '{}', wildcard: {}",
+            rule.original, pattern, wildcard
         );
     }
 
     println!("\nDeny rules ({}):", permissions.deny.len());
     for rule in &permissions.deny {
+        let wildcard = rule.segments.len() > 1;
+        let pattern = rule.segments.join("*");
         println!(
-            "  {} -> prefix: '{}', wildcard: {}",
-            rule.original, rule.prefix, rule.is_wildcard
+            "  {} -> pattern: '{}', wildcard: {}",
+            rule.original, pattern, wildcard
         );
     }
 
