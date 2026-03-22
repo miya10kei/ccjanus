@@ -23,14 +23,21 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match &cli.command {
-        None => run_hook_mode(cli.debug, cli.explain),
-        Some(Command::Doctor) => run_doctor_mode(),
+        None => run_hook_mode(cli.debug, cli.explain, cli.flexible_match),
+        Some(Command::Doctor) => run_doctor_mode(cli.flexible_match),
         Some(Command::Parse) => run_parse_mode(),
         Some(Command::Simulate {
             command,
             permissions,
             deny,
-        }) => run_simulate_mode(command, permissions, deny, cli.debug, cli.explain),
+        }) => run_simulate_mode(
+            command,
+            permissions,
+            deny,
+            cli.debug,
+            cli.explain,
+            cli.flexible_match,
+        ),
     };
 
     if let Err(e) = result {
@@ -41,7 +48,7 @@ fn main() {
     }
 }
 
-fn run_hook_mode(debug: bool, explain: bool) -> Result<()> {
+fn run_hook_mode(debug: bool, explain: bool, flexible_match_cli: bool) -> Result<()> {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;
 
@@ -66,7 +73,10 @@ fn run_hook_mode(debug: bool, explain: bool) -> Result<()> {
         None => return Ok(()),
     };
 
-    let permissions = load_permission_set(debug)?;
+    let mut permissions = load_permission_set(debug)?;
+    if flexible_match_cli {
+        permissions.flexible_match = true;
+    }
 
     match judge(&command, &permissions, debug, explain) {
         Judgment::Allow => emit_allow(),
@@ -77,9 +87,12 @@ fn run_hook_mode(debug: bool, explain: bool) -> Result<()> {
     Ok(())
 }
 
-fn run_doctor_mode() -> Result<()> {
+fn run_doctor_mode(flexible_match_cli: bool) -> Result<()> {
     let files = discover_settings_files();
-    let permissions = load_permission_set(false)?;
+    let mut permissions = load_permission_set(false)?;
+    if flexible_match_cli {
+        permissions.flexible_match = true;
+    }
 
     println!("Settings files:");
     for file in &files {
@@ -106,6 +119,8 @@ fn run_doctor_mode() -> Result<()> {
             rule.original, pattern, wildcard
         );
     }
+
+    println!("\nFlexible match: {}", permissions.flexible_match);
 
     Ok(())
 }
@@ -140,6 +155,7 @@ fn run_simulate_mode(
     deny_rules: &[String],
     debug: bool,
     explain: bool,
+    flexible_match: bool,
 ) -> Result<()> {
     let permissions = PermissionSet {
         allow: allow_rules
@@ -150,6 +166,7 @@ fn run_simulate_mode(
             .iter()
             .filter_map(|s| parse_bash_rule(s))
             .collect(),
+        flexible_match,
     };
 
     let result = judge(command, &permissions, debug, explain);
