@@ -17,9 +17,12 @@ pub fn load_permission_set(debug: bool) -> Result<PermissionSet> {
         }
 
         match load_permissions_from_file(&file_info.path) {
-            Ok((allow, deny)) => {
+            Ok((allow, deny, flexible_match)) => {
                 perm_set.allow.extend(allow);
                 perm_set.deny.extend(deny);
+                if flexible_match {
+                    perm_set.flexible_match = true;
+                }
             }
             Err(e) => {
                 if debug {
@@ -101,10 +104,11 @@ fn git_root_dir() -> Option<PathBuf> {
 }
 
 fn load_permissions_from_file(
-    path: &PathBuf,
+    path: &std::path::Path,
 ) -> Result<(
     Vec<crate::types::PermissionRule>,
     Vec<crate::types::PermissionRule>,
+    bool,
 )> {
     let content = std::fs::read_to_string(path)?;
     let value: serde_json::Value = serde_json::from_str(&content)?;
@@ -140,7 +144,13 @@ fn load_permissions_from_file(
         }
     }
 
-    Ok((allow_rules, deny_rules))
+    // Parse "permissions" -> "flexible_match" boolean
+    let flexible_match = value
+        .pointer("/permissions/flexible_match")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    Ok((allow_rules, deny_rules, flexible_match))
 }
 
 #[cfg(test)]
@@ -169,12 +179,13 @@ mod tests {
             }"#,
         );
 
-        let (allow, deny) = load_permissions_from_file(&path).unwrap();
+        let (allow, deny, flexible) = load_permissions_from_file(&path).unwrap();
         assert_eq!(allow.len(), 2);
         assert_eq!(deny.len(), 1);
         assert_eq!(allow[0].segments, vec!["ls ", ""]);
         assert_eq!(allow[1].segments, vec!["cat ", ""]);
         assert_eq!(deny[0].segments, vec!["rm ", ""]);
+        assert!(!flexible);
     }
 
     #[test]
@@ -189,7 +200,7 @@ mod tests {
             }"#,
         );
 
-        let (allow, _deny) = load_permissions_from_file(&path).unwrap();
+        let (allow, _deny, _flexible) = load_permissions_from_file(&path).unwrap();
         assert_eq!(allow.len(), 1);
         assert_eq!(allow[0].segments, vec!["ls ", ""]);
     }
@@ -199,9 +210,60 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let path = create_settings_file(tmp.path(), r#"{"other": "value"}"#);
 
-        let (allow, deny) = load_permissions_from_file(&path).unwrap();
+        let (allow, deny, flexible) = load_permissions_from_file(&path).unwrap();
         assert!(allow.is_empty());
         assert!(deny.is_empty());
+        assert!(!flexible);
+    }
+
+    #[test]
+    fn test_load_permissions_flexible_match_true() {
+        let tmp = TempDir::new().unwrap();
+        let path = create_settings_file(
+            tmp.path(),
+            r#"{
+                "permissions": {
+                    "allow": ["Bash(ls *)"],
+                    "flexible_match": true
+                }
+            }"#,
+        );
+
+        let (_allow, _deny, flexible) = load_permissions_from_file(&path).unwrap();
+        assert!(flexible);
+    }
+
+    #[test]
+    fn test_load_permissions_flexible_match_false() {
+        let tmp = TempDir::new().unwrap();
+        let path = create_settings_file(
+            tmp.path(),
+            r#"{
+                "permissions": {
+                    "allow": ["Bash(ls *)"],
+                    "flexible_match": false
+                }
+            }"#,
+        );
+
+        let (_allow, _deny, flexible) = load_permissions_from_file(&path).unwrap();
+        assert!(!flexible);
+    }
+
+    #[test]
+    fn test_load_permissions_flexible_match_missing() {
+        let tmp = TempDir::new().unwrap();
+        let path = create_settings_file(
+            tmp.path(),
+            r#"{
+                "permissions": {
+                    "allow": ["Bash(ls *)"]
+                }
+            }"#,
+        );
+
+        let (_allow, _deny, flexible) = load_permissions_from_file(&path).unwrap();
+        assert!(!flexible);
     }
 
     #[test]

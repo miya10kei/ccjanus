@@ -17,6 +17,10 @@ pub struct Cli {
     /// Show explanation of the judgment
     #[arg(long, global = true)]
     pub explain: bool,
+
+    /// Enable flexible matching that strips option arguments before matching
+    #[arg(long, global = true)]
+    pub flexible_match: bool,
 }
 
 #[derive(Debug, Subcommand)]

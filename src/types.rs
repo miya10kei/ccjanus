@@ -34,6 +34,7 @@ pub enum Judgment {
 pub struct PermissionSet {
     pub allow: Vec<PermissionRule>,
     pub deny: Vec<PermissionRule>,
+    pub flexible_match: bool,
 }
 
 #[derive(Debug, Serialize)]

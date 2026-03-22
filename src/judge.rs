@@ -1,6 +1,6 @@
 use crate::parser::{is_simple_command, parse_command};
-use crate::permission::matches;
-use crate::types::{Judgment, PermissionSet};
+use crate::permission::{matches as matches_rule_exact, matches_flexible};
+use crate::types::{Judgment, PermissionRule, PermissionSet};
 
 /// Judge a command against the permission set.
 pub fn judge(command: &str, permissions: &PermissionSet, debug: bool, explain: bool) -> Judgment {
@@ -15,6 +15,23 @@ pub fn judge(command: &str, permissions: &PermissionSet, debug: bool, explain: b
     }
 }
 
+/// Result of matching a rule against a command.
+enum MatchKind {
+    None,
+    Exact,
+    Flexible,
+}
+
+fn match_rule(rule: &PermissionRule, command: &str, flexible: bool) -> MatchKind {
+    if matches_rule_exact(rule, command) {
+        return MatchKind::Exact;
+    }
+    if flexible && matches_flexible(rule, command) {
+        return MatchKind::Flexible;
+    }
+    MatchKind::None
+}
+
 fn judge_simple(
     command: &str,
     permissions: &PermissionSet,
@@ -22,13 +39,19 @@ fn judge_simple(
     explain: bool,
 ) -> Judgment {
     let cmd = command.trim();
+    let flexible = permissions.flexible_match;
 
     // Check deny rules first
     for rule in &permissions.deny {
-        if matches(rule, cmd) {
+        let result = match_rule(rule, cmd, flexible);
+        if !matches!(result, MatchKind::None) {
+            let via = match result {
+                MatchKind::Flexible => " [via flexible match]",
+                _ => "",
+            };
             if explain {
                 eprintln!(
-                    "[ccjanus] fallthrough: simple command '{cmd}' matches deny rule '{}'",
+                    "[ccjanus] fallthrough: simple command '{cmd}' matches deny rule '{}'{via}",
                     rule.original
                 );
             }
@@ -41,10 +64,15 @@ fn judge_simple(
 
     // Check allow rules
     for rule in &permissions.allow {
-        if matches(rule, cmd) {
+        let result = match_rule(rule, cmd, flexible);
+        if !matches!(result, MatchKind::None) {
+            let via = match result {
+                MatchKind::Flexible => " [via flexible match]",
+                _ => "",
+            };
             if explain {
                 eprintln!(
-                    "[ccjanus] allow: simple command '{cmd}' matches allow rule '{}'",
+                    "[ccjanus] allow: simple command '{cmd}' matches allow rule '{}'{via}",
                     rule.original
                 );
             }
@@ -78,13 +106,26 @@ fn judge_compound(
         return Judgment::Fallthrough("no segments found".to_string());
     }
 
+    let flexible = permissions.flexible_match;
+
     // Check deny rules against all segments
     for segment in &segments {
         for rule in &permissions.deny {
-            if matches(rule, &segment.command_name) || matches(rule, &segment.full_text) {
+            let by_name = match_rule(rule, &segment.command_name, flexible);
+            let by_text = match_rule(rule, &segment.full_text, flexible);
+            let matched =
+                !matches!(by_name, MatchKind::None) || !matches!(by_text, MatchKind::None);
+            if matched {
+                let via = if matches!(by_name, MatchKind::Flexible)
+                    || matches!(by_text, MatchKind::Flexible)
+                {
+                    " [via flexible match]"
+                } else {
+                    ""
+                };
                 if explain {
                     eprintln!(
-                        "[ccjanus] deny: segment '{}' matches deny rule '{}'",
+                        "[ccjanus] deny: segment '{}' matches deny rule '{}'{via}",
                         segment.full_text, rule.original
                     );
                 }
@@ -99,10 +140,15 @@ fn judge_compound(
     // Check if all segments are allowed
     let mut all_allowed = true;
     for segment in &segments {
-        let segment_allowed = permissions
-            .allow
-            .iter()
-            .any(|rule| matches(rule, &segment.command_name) || matches(rule, &segment.full_text));
+        let segment_allowed = permissions.allow.iter().any(|rule| {
+            !matches!(
+                match_rule(rule, &segment.command_name, flexible),
+                MatchKind::None
+            ) || !matches!(
+                match_rule(rule, &segment.full_text, flexible),
+                MatchKind::None
+            )
+        });
 
         if !segment_allowed {
             if explain {
@@ -136,6 +182,15 @@ mod tests {
         PermissionSet {
             allow: allow.iter().filter_map(|s| parse_bash_rule(s)).collect(),
             deny: deny.iter().filter_map(|s| parse_bash_rule(s)).collect(),
+            flexible_match: false,
+        }
+    }
+
+    fn make_permissions_flexible(allow: &[&str], deny: &[&str]) -> PermissionSet {
+        PermissionSet {
+            allow: allow.iter().filter_map(|s| parse_bash_rule(s)).collect(),
+            deny: deny.iter().filter_map(|s| parse_bash_rule(s)).collect(),
+            flexible_match: true,
         }
     }
 
@@ -222,6 +277,95 @@ mod tests {
         let perms = make_permissions(&["Bash(ls *)", "Bash(echo *)"], &[]);
         assert_eq!(
             judge("ls && echo done", &perms, false, false),
+            Judgment::Allow
+        );
+    }
+
+    // --- flexible match tests ---
+
+    #[test]
+    fn test_flexible_simple_allow_with_options() {
+        let perms = make_permissions_flexible(&["Bash(uv run ruff format *)"], &[]);
+        assert_eq!(
+            judge(
+                "uv run --group dev ruff format chatbot-agent/",
+                &perms,
+                false,
+                false
+            ),
+            Judgment::Allow
+        );
+    }
+
+    #[test]
+    fn test_flexible_simple_deny_with_options() {
+        let perms = make_permissions_flexible(&["Bash(git *)"], &["Bash(git push * main)"]);
+        match judge("git push --force origin main", &perms, false, false) {
+            Judgment::Fallthrough(_) => {}
+            other => panic!("Expected Fallthrough, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_flexible_disabled_no_stripping() {
+        let perms = make_permissions(&["Bash(uv run ruff format *)"], &[]);
+        match judge(
+            "uv run --group dev ruff format chatbot-agent/",
+            &perms,
+            false,
+            false,
+        ) {
+            Judgment::Fallthrough(_) => {}
+            other => panic!("Expected Fallthrough without flexible match, got {other:?}"),
+        }
+    }
+
+    // --- Tests: rules containing flag-like tokens ---
+
+    #[test]
+    fn test_flexible_rule_with_flag_matched_by_exact() {
+        // Rule `python -m pytest *` contains `-m`.
+        // match_rule tries matches() first which succeeds via prefix match.
+        let perms = make_permissions_flexible(&["Bash(python -m pytest *)"], &[]);
+        assert_eq!(
+            judge("python -m pytest -v tests/", &perms, false, false),
+            Judgment::Allow
+        );
+    }
+
+    #[test]
+    fn test_flexible_deny_rule_with_flag() {
+        // Deny rule `git push --force *` contains `--force`.
+        // matches() handles it via prefix match.
+        let perms = make_permissions_flexible(&["Bash(git *)"], &["Bash(git push --force *)"]);
+        match judge("git push --force origin main", &perms, false, false) {
+            Judgment::Fallthrough(_) => {}
+            other => panic!("Expected Fallthrough (deny matched via exact), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_flexible_rule_with_flag_no_extra_flags() {
+        // Command matches rule exactly (no extra flags to strip).
+        let perms = make_permissions_flexible(&["Bash(docker run --rm *)"], &[]);
+        assert_eq!(
+            judge("docker run --rm myimage", &perms, false, false),
+            Judgment::Allow
+        );
+    }
+
+    #[test]
+    fn test_flexible_rule_with_flag_and_extra_flags() {
+        // Rule: `git merge --squash *`, command has extra `--no-edit`.
+        // matches() succeeds because "git merge --squash " is a prefix of the command.
+        let perms = make_permissions_flexible(&["Bash(git merge --squash *)"], &[]);
+        assert_eq!(
+            judge(
+                "git merge --squash --no-edit feature-branch",
+                &perms,
+                false,
+                false
+            ),
             Judgment::Allow
         );
     }
