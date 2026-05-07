@@ -21,6 +21,10 @@ pub struct Cli {
     /// Enable flexible matching that strips option arguments before matching
     #[arg(long, global = true)]
     pub flexible_match: bool,
+
+    /// Disable PATH-aware matching that normalizes absolute paths to basenames
+    #[arg(long, global = true)]
+    pub no_path_normalize: bool,
 }
 
 #[derive(Debug, Subcommand)]

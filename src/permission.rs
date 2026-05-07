@@ -1,4 +1,47 @@
+use std::path::Path;
+
 use crate::types::PermissionRule;
+
+/// Normalize a command by stripping the absolute path prefix from its first token
+/// when that path's parent directory is in `path_dirs`.
+///
+/// Returns `None` if no normalization applies (e.g., first token is not absolute,
+/// parent directory is not in `path_dirs`, or `path_dirs` is empty).
+///
+/// Example: `("/usr/bin/grep foo", &["/usr/bin"])` returns `Some("grep foo")`.
+pub fn normalize_path_command(command: &str, path_dirs: &[String]) -> Option<String> {
+    if path_dirs.is_empty() {
+        return None;
+    }
+
+    let trimmed = command.trim_start();
+    let (first, rest) = match trimmed.split_once(char::is_whitespace) {
+        Some((f, r)) => (f, r.trim_start()),
+        None => (trimmed, ""),
+    };
+
+    if !first.starts_with('/') {
+        return None;
+    }
+
+    let path = Path::new(first);
+    let parent = path.parent()?.to_str()?;
+
+    if !path_dirs.iter().any(|d| d == parent) {
+        return None;
+    }
+
+    let basename = path.file_name()?.to_str()?;
+    if basename.is_empty() {
+        return None;
+    }
+
+    Some(if rest.is_empty() {
+        basename.to_string()
+    } else {
+        format!("{basename} {rest}")
+    })
+}
 
 /// Parse a `Bash(...)` rule string into a `PermissionRule`.
 ///
@@ -824,5 +867,102 @@ mod tests {
         let flags: Vec<String> = (0..20).map(|i| format!("--f{i} v{i}")).collect();
         let cmd = format!("cmd {} other", flags.join(" "));
         assert!(!matches_flexible(&rule, &cmd));
+    }
+
+    // --- normalize_path_command tests ---
+
+    fn dirs(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn test_normalize_path_command_basic() {
+        assert_eq!(
+            normalize_path_command("/usr/bin/ls", &dirs(&["/usr/bin"])),
+            Some("ls".to_string())
+        );
+    }
+
+    #[test]
+    fn test_normalize_path_command_with_args() {
+        assert_eq!(
+            normalize_path_command("/usr/bin/ls -la /tmp", &dirs(&["/usr/bin"])),
+            Some("ls -la /tmp".to_string())
+        );
+    }
+
+    #[test]
+    fn test_normalize_path_command_relative_returns_none() {
+        assert_eq!(normalize_path_command("ls foo", &dirs(&["/usr/bin"])), None);
+        assert_eq!(
+            normalize_path_command("./grep foo", &dirs(&["/usr/bin"])),
+            None
+        );
+    }
+
+    #[test]
+    fn test_normalize_path_command_dir_not_in_path() {
+        assert_eq!(
+            normalize_path_command("/opt/custom/tool", &dirs(&["/usr/bin"])),
+            None
+        );
+    }
+
+    #[test]
+    fn test_normalize_path_command_multiple_dirs() {
+        assert_eq!(
+            normalize_path_command(
+                "/usr/local/bin/foo arg",
+                &dirs(&["/usr/bin", "/usr/local/bin"])
+            ),
+            Some("foo arg".to_string())
+        );
+    }
+
+    #[test]
+    fn test_normalize_path_command_empty_path_dirs() {
+        assert_eq!(normalize_path_command("/usr/bin/ls", &dirs(&[])), None);
+    }
+
+    #[test]
+    fn test_normalize_path_command_top_level() {
+        assert_eq!(
+            normalize_path_command("/grep foo", &dirs(&["/"])),
+            Some("grep foo".to_string())
+        );
+    }
+
+    #[test]
+    fn test_normalize_path_command_empty_command() {
+        assert_eq!(normalize_path_command("", &dirs(&["/usr/bin"])), None);
+        assert_eq!(normalize_path_command("   ", &dirs(&["/usr/bin"])), None);
+    }
+
+    #[test]
+    fn test_normalize_path_command_leading_whitespace() {
+        assert_eq!(
+            normalize_path_command("  /usr/bin/ls foo", &dirs(&["/usr/bin"])),
+            Some("ls foo".to_string())
+        );
+    }
+
+    #[test]
+    fn test_normalize_path_command_trailing_slash_only_in_path_dirs() {
+        // path_dirs is compared as-is. If $PATH has /usr/bin/ (trailing slash),
+        // it won't match a parent of "/usr/bin" (no slash).
+        assert_eq!(
+            normalize_path_command("/usr/bin/ls", &dirs(&["/usr/bin/"])),
+            None
+        );
+    }
+
+    #[test]
+    fn test_normalize_path_command_multiple_spaces_between_args() {
+        // Internal multiple spaces in args are collapsed by split_once + trim_start.
+        // First arg separator collapses, but rest preserves its content.
+        assert_eq!(
+            normalize_path_command("/usr/bin/ls   -la", &dirs(&["/usr/bin"])),
+            Some("ls -la".to_string())
+        );
     }
 }
