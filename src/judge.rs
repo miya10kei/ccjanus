@@ -1,34 +1,124 @@
 use crate::parser::{is_simple_command, parse_command};
-use crate::permission::{matches as matches_rule_exact, matches_flexible};
+use crate::permission::{matches as matches_rule_exact, matches_flexible, normalize_path_command};
 use crate::types::{Judgment, PermissionRule, PermissionSet};
 
 /// Judge a command against the permission set.
 pub fn judge(command: &str, permissions: &PermissionSet, debug: bool, explain: bool) -> Judgment {
+    let path_dirs = if permissions.path_normalize {
+        current_path_dirs()
+    } else {
+        Vec::new()
+    };
+    judge_with_path_dirs(command, permissions, debug, explain, &path_dirs)
+}
+
+fn judge_with_path_dirs(
+    command: &str,
+    permissions: &PermissionSet,
+    debug: bool,
+    explain: bool,
+    path_dirs: &[String],
+) -> Judgment {
     if command.trim().is_empty() {
         return Judgment::Fallthrough("empty command".to_string());
     }
 
     if is_simple_command(command) {
-        judge_simple(command, permissions, debug, explain)
+        judge_simple(command, permissions, debug, explain, path_dirs)
     } else {
-        judge_compound(command, permissions, debug, explain)
+        judge_compound(command, permissions, debug, explain, path_dirs)
     }
+}
+
+fn current_path_dirs() -> Vec<String> {
+    std::env::var("PATH")
+        .ok()
+        .map(|p| {
+            p.split(':')
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Result of matching a rule against a command.
 enum MatchKind {
     None,
-    Exact,
-    Flexible,
+    Match {
+        flexible: bool,
+        path_normalized: bool,
+    },
 }
 
-fn match_rule(rule: &PermissionRule, command: &str, flexible: bool) -> MatchKind {
+impl MatchKind {
+    fn matched(&self) -> bool {
+        matches!(self, MatchKind::Match { .. })
+    }
+
+    fn via(&self) -> String {
+        let MatchKind::Match {
+            flexible,
+            path_normalized,
+        } = self
+        else {
+            return String::new();
+        };
+        let mut parts = Vec::new();
+        if *path_normalized {
+            parts.push("path normalization");
+        }
+        if *flexible {
+            parts.push("flexible match");
+        }
+        if parts.is_empty() {
+            String::new()
+        } else {
+            format!(" [via {}]", parts.join(", "))
+        }
+    }
+}
+
+fn match_rule(
+    rule: &PermissionRule,
+    command: &str,
+    flexible: bool,
+    path_dirs: &[String],
+) -> MatchKind {
     if matches_rule_exact(rule, command) {
-        return MatchKind::Exact;
+        return MatchKind::Match {
+            flexible: false,
+            path_normalized: false,
+        };
     }
-    if flexible && matches_flexible(rule, command) {
-        return MatchKind::Flexible;
+
+    let normalized = normalize_path_command(command, path_dirs);
+    if let Some(ref n) = normalized {
+        if matches_rule_exact(rule, n) {
+            return MatchKind::Match {
+                flexible: false,
+                path_normalized: true,
+            };
+        }
     }
+
+    if flexible {
+        if matches_flexible(rule, command) {
+            return MatchKind::Match {
+                flexible: true,
+                path_normalized: false,
+            };
+        }
+        if let Some(ref n) = normalized {
+            if matches_flexible(rule, n) {
+                return MatchKind::Match {
+                    flexible: true,
+                    path_normalized: true,
+                };
+            }
+        }
+    }
+
     MatchKind::None
 }
 
@@ -37,18 +127,16 @@ fn judge_simple(
     permissions: &PermissionSet,
     _debug: bool,
     explain: bool,
+    path_dirs: &[String],
 ) -> Judgment {
     let cmd = command.trim();
     let flexible = permissions.flexible_match;
 
     // Check deny rules first
     for rule in &permissions.deny {
-        let result = match_rule(rule, cmd, flexible);
-        if !matches!(result, MatchKind::None) {
-            let via = match result {
-                MatchKind::Flexible => " [via flexible match]",
-                _ => "",
-            };
+        let result = match_rule(rule, cmd, flexible, path_dirs);
+        if result.matched() {
+            let via = result.via();
             if explain {
                 eprintln!(
                     "[ccjanus] fallthrough: simple command '{cmd}' matches deny rule '{}'{via}",
@@ -64,12 +152,9 @@ fn judge_simple(
 
     // Check allow rules
     for rule in &permissions.allow {
-        let result = match_rule(rule, cmd, flexible);
-        if !matches!(result, MatchKind::None) {
-            let via = match result {
-                MatchKind::Flexible => " [via flexible match]",
-                _ => "",
-            };
+        let result = match_rule(rule, cmd, flexible, path_dirs);
+        if result.matched() {
+            let via = result.via();
             if explain {
                 eprintln!(
                     "[ccjanus] allow: simple command '{cmd}' matches allow rule '{}'{via}",
@@ -91,6 +176,7 @@ fn judge_compound(
     permissions: &PermissionSet,
     debug: bool,
     explain: bool,
+    path_dirs: &[String],
 ) -> Judgment {
     let segments = match parse_command(command) {
         Ok(s) => s,
@@ -111,17 +197,13 @@ fn judge_compound(
     // Check deny rules against all segments
     for segment in &segments {
         for rule in &permissions.deny {
-            let by_name = match_rule(rule, &segment.command_name, flexible);
-            let by_text = match_rule(rule, &segment.full_text, flexible);
-            let matched =
-                !matches!(by_name, MatchKind::None) || !matches!(by_text, MatchKind::None);
-            if matched {
-                let via = if matches!(by_name, MatchKind::Flexible)
-                    || matches!(by_text, MatchKind::Flexible)
-                {
-                    " [via flexible match]"
+            let by_name = match_rule(rule, &segment.command_name, flexible, path_dirs);
+            let by_text = match_rule(rule, &segment.full_text, flexible, path_dirs);
+            if by_name.matched() || by_text.matched() {
+                let via = if by_name.matched() {
+                    by_name.via()
                 } else {
-                    ""
+                    by_text.via()
                 };
                 if explain {
                     eprintln!(
@@ -141,13 +223,8 @@ fn judge_compound(
     let mut all_allowed = true;
     for segment in &segments {
         let segment_allowed = permissions.allow.iter().any(|rule| {
-            !matches!(
-                match_rule(rule, &segment.command_name, flexible),
-                MatchKind::None
-            ) || !matches!(
-                match_rule(rule, &segment.full_text, flexible),
-                MatchKind::None
-            )
+            match_rule(rule, &segment.command_name, flexible, path_dirs).matched()
+                || match_rule(rule, &segment.full_text, flexible, path_dirs).matched()
         });
 
         if !segment_allowed {
@@ -183,6 +260,7 @@ mod tests {
             allow: allow.iter().filter_map(|s| parse_bash_rule(s)).collect(),
             deny: deny.iter().filter_map(|s| parse_bash_rule(s)).collect(),
             flexible_match: false,
+            path_normalize: false,
         }
     }
 
@@ -191,7 +269,13 @@ mod tests {
             allow: allow.iter().filter_map(|s| parse_bash_rule(s)).collect(),
             deny: deny.iter().filter_map(|s| parse_bash_rule(s)).collect(),
             flexible_match: true,
+            path_normalize: false,
         }
+    }
+
+    fn judge_with_dirs(command: &str, permissions: &PermissionSet, path_dirs: &[&str]) -> Judgment {
+        let dirs: Vec<String> = path_dirs.iter().map(|s| s.to_string()).collect();
+        judge_with_path_dirs(command, permissions, false, false, &dirs)
     }
 
     #[test]
@@ -368,5 +452,78 @@ mod tests {
             ),
             Judgment::Allow
         );
+    }
+
+    // --- path normalization tests ---
+
+    #[test]
+    fn test_path_normalize_simple_allow() {
+        let perms = make_permissions(&["Bash(ls *)"], &[]);
+        assert_eq!(
+            judge_with_dirs("/usr/bin/ls -la", &perms, &["/usr/bin"]),
+            Judgment::Allow
+        );
+    }
+
+    #[test]
+    fn test_path_normalize_simple_deny_fallthrough() {
+        let perms = make_permissions(&[], &["Bash(rm *)"]);
+        match judge_with_dirs("/bin/rm foo", &perms, &["/bin"]) {
+            Judgment::Fallthrough(_) => {}
+            other => panic!("Expected Fallthrough, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_path_normalize_compound_all_allowed() {
+        let perms = make_permissions(&["Bash(ls *)", "Bash(grep *)"], &[]);
+        assert_eq!(
+            judge_with_dirs(
+                "/usr/bin/ls /tmp | /usr/bin/grep test",
+                &perms,
+                &["/usr/bin"]
+            ),
+            Judgment::Allow
+        );
+    }
+
+    #[test]
+    fn test_path_normalize_disabled_no_normalization() {
+        let perms = make_permissions(&["Bash(ls *)"], &[]);
+        match judge_with_dirs("/usr/bin/ls -la", &perms, &[]) {
+            Judgment::Fallthrough(_) => {}
+            other => panic!("Expected Fallthrough without normalization, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_path_normalize_outside_path_dirs() {
+        let perms = make_permissions(&["Bash(grep *)"], &[]);
+        match judge_with_dirs("/tmp/evil/grep foo", &perms, &["/usr/bin"]) {
+            Judgment::Fallthrough(_) => {}
+            other => panic!("Expected Fallthrough for non-PATH binary, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_path_normalize_with_flexible_match() {
+        let perms = make_permissions_flexible(&["Bash(uv run ruff format *)"], &[]);
+        assert_eq!(
+            judge_with_dirs(
+                "/usr/bin/uv run --group dev ruff format chatbot-agent/",
+                &perms,
+                &["/usr/bin"]
+            ),
+            Judgment::Allow
+        );
+    }
+
+    #[test]
+    fn test_path_normalize_compound_deny_via_normalization() {
+        let perms = make_permissions(&["Bash(ls *)", "Bash(rm *)"], &["Bash(rm *)"]);
+        match judge_with_dirs("ls /tmp | /bin/rm -rf /", &perms, &["/bin"]) {
+            Judgment::Deny(_) => {}
+            other => panic!("Expected Deny via normalization, got {other:?}"),
+        }
     }
 }

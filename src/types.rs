@@ -30,11 +30,23 @@ pub enum Judgment {
     Fallthrough(String),
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct PermissionSet {
     pub allow: Vec<PermissionRule>,
     pub deny: Vec<PermissionRule>,
     pub flexible_match: bool,
+    pub path_normalize: bool,
+}
+
+impl Default for PermissionSet {
+    fn default() -> Self {
+        Self {
+            allow: Vec::new(),
+            deny: Vec::new(),
+            flexible_match: false,
+            path_normalize: true,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]

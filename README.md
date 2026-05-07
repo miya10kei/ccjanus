@@ -117,6 +117,43 @@ When enabled, ccjanus strips `-x val`, `--flag val`, `--flag=val` patterns from 
 
 **Limitation:** Rules containing flag-like tokens (e.g., `Bash(python -m pytest *)`, `Bash(docker run * --rm)`) are matched by the normal (exact) matching, not by flexible matching. Flexible matching strips flags from the command, so flags in the rule pattern cannot be matched via stripping. This is handled automatically — the normal match is always tried first.
 
+## PATH-aware Matching
+
+Commands invoked with an absolute path (e.g., `/usr/bin/grep foo`) do not match permission rules written for the bare name (e.g., `Bash(grep *)`) because matching is purely string-based. To avoid forcing users to enumerate every possible absolute path, ccjanus normalizes the leading absolute path to its basename when its parent directory is in `$PATH`.
+
+**Enabled by default.** This applies to both `allow` and `deny` rules so that adding flags or absolute paths cannot bypass deny rules.
+
+### Behavior
+
+- Only the **first token** of each command segment (split by pipes, `&&`, etc.) is considered.
+- The first token is normalized only when:
+  1. It starts with `/` (absolute path), AND
+  2. Its parent directory exactly matches one of the entries in `$PATH`.
+- Otherwise the original command is used as-is.
+
+Examples (with `PATH=/usr/bin`):
+
+| Command | Rule | Match? |
+|---------|------|--------|
+| `/usr/bin/grep foo` | `Bash(grep *)` | ✅ (normalized to `grep foo`) |
+| `/tmp/evil/grep foo` | `Bash(grep *)` | ❌ (`/tmp/evil` not in `$PATH`) |
+| `./grep foo` | `Bash(grep *)` | ❌ (not absolute) |
+| `/bin/rm /tmp/x` | deny `Bash(rm *)` | ✅ deny matches (normalized) |
+
+### Disabling
+
+There is **no settings.json field** for this. Use the CLI flag:
+
+```bash
+ccjanus --no-path-normalize
+ccjanus simulate --no-path-normalize --command '/usr/bin/grep foo' --permissions 'Bash(grep *)'
+```
+
+### Limitations
+
+- Path normalization compares strings against `$PATH` entries verbatim. Trailing slashes or symlinks are not canonicalized.
+- Environment variable prefixes (e.g., `FOO=bar /usr/bin/ls`) work in compound-command segments because `command_name` is extracted first, but in pure simple commands the prefixed form is left untouched.
+
 ## CLI Modes
 
 ### Hook Mode (default)

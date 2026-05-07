@@ -402,3 +402,138 @@ fn test_hook_mode_flexible_match_from_settings() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("approve"));
 }
+
+#[test]
+fn test_hook_mode_path_normalize_allow() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let settings_path = tmp.path().join("settings.json");
+    std::fs::write(
+        &settings_path,
+        r#"{"permissions":{"allow":["Bash(grep *)"]}}"#,
+    )
+    .unwrap();
+
+    let mut child = ccjanus_bin()
+        .env("CLAUDE_CONFIG_DIR", tmp.path())
+        .env("PATH", "/usr/bin")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let stdin = child.stdin.as_mut().unwrap();
+    stdin
+        .write_all(br#"{"tool_name":"Bash","tool_input":{"command":"/usr/bin/grep foo"}}"#)
+        .unwrap();
+    drop(child.stdin.take());
+
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("approve"));
+}
+
+#[test]
+fn test_hook_mode_no_path_normalize_flag_disables() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let settings_path = tmp.path().join("settings.json");
+    std::fs::write(
+        &settings_path,
+        r#"{"permissions":{"allow":["Bash(grep *)"]}}"#,
+    )
+    .unwrap();
+
+    let mut child = ccjanus_bin()
+        .arg("--no-path-normalize")
+        .env("CLAUDE_CONFIG_DIR", tmp.path())
+        .env("PATH", "/usr/bin")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let stdin = child.stdin.as_mut().unwrap();
+    stdin
+        .write_all(br#"{"tool_name":"Bash","tool_input":{"command":"/usr/bin/grep foo"}}"#)
+        .unwrap();
+    drop(child.stdin.take());
+
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    // No normalization -> no matching rule -> fallthrough (empty stdout)
+    assert!(stdout.is_empty());
+}
+
+#[test]
+fn test_hook_mode_path_normalize_outside_path_dir() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let settings_path = tmp.path().join("settings.json");
+    std::fs::write(
+        &settings_path,
+        r#"{"permissions":{"allow":["Bash(grep *)"]}}"#,
+    )
+    .unwrap();
+
+    let mut child = ccjanus_bin()
+        .env("CLAUDE_CONFIG_DIR", tmp.path())
+        .env("PATH", "/usr/bin")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let stdin = child.stdin.as_mut().unwrap();
+    stdin
+        .write_all(br#"{"tool_name":"Bash","tool_input":{"command":"/tmp/evil/grep foo"}}"#)
+        .unwrap();
+    drop(child.stdin.take());
+
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    // /tmp/evil is not in PATH -> fallthrough
+    assert!(stdout.is_empty());
+}
+
+#[test]
+fn test_simulate_mode_path_normalize_allow() {
+    let output = ccjanus_bin()
+        .env("PATH", "/usr/bin")
+        .args([
+            "simulate",
+            "--command",
+            "/usr/bin/grep foo",
+            "--permissions",
+            "Bash(grep *)",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("ALLOW"));
+}
+
+#[test]
+fn test_simulate_mode_no_path_normalize_disables() {
+    let output = ccjanus_bin()
+        .env("PATH", "/usr/bin")
+        .args([
+            "simulate",
+            "--no-path-normalize",
+            "--command",
+            "/usr/bin/grep foo",
+            "--permissions",
+            "Bash(grep *)",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("FALLTHROUGH"));
+}

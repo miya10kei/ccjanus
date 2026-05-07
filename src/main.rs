@@ -23,8 +23,13 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match &cli.command {
-        None => run_hook_mode(cli.debug, cli.explain, cli.flexible_match),
-        Some(Command::Doctor) => run_doctor_mode(cli.flexible_match),
+        None => run_hook_mode(
+            cli.debug,
+            cli.explain,
+            cli.flexible_match,
+            cli.no_path_normalize,
+        ),
+        Some(Command::Doctor) => run_doctor_mode(cli.flexible_match, cli.no_path_normalize),
         Some(Command::Parse) => run_parse_mode(),
         Some(Command::Simulate {
             command,
@@ -37,6 +42,7 @@ fn main() {
             cli.debug,
             cli.explain,
             cli.flexible_match,
+            cli.no_path_normalize,
         ),
     };
 
@@ -48,7 +54,12 @@ fn main() {
     }
 }
 
-fn run_hook_mode(debug: bool, explain: bool, flexible_match_cli: bool) -> Result<()> {
+fn run_hook_mode(
+    debug: bool,
+    explain: bool,
+    flexible_match_cli: bool,
+    no_path_normalize_cli: bool,
+) -> Result<()> {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;
 
@@ -77,6 +88,9 @@ fn run_hook_mode(debug: bool, explain: bool, flexible_match_cli: bool) -> Result
     if flexible_match_cli {
         permissions.flexible_match = true;
     }
+    if no_path_normalize_cli {
+        permissions.path_normalize = false;
+    }
 
     match judge(&command, &permissions, debug, explain) {
         Judgment::Allow => emit_allow(),
@@ -87,11 +101,14 @@ fn run_hook_mode(debug: bool, explain: bool, flexible_match_cli: bool) -> Result
     Ok(())
 }
 
-fn run_doctor_mode(flexible_match_cli: bool) -> Result<()> {
+fn run_doctor_mode(flexible_match_cli: bool, no_path_normalize_cli: bool) -> Result<()> {
     let files = discover_settings_files();
     let mut permissions = load_permission_set(false)?;
     if flexible_match_cli {
         permissions.flexible_match = true;
+    }
+    if no_path_normalize_cli {
+        permissions.path_normalize = false;
     }
 
     println!("Settings files:");
@@ -121,6 +138,7 @@ fn run_doctor_mode(flexible_match_cli: bool) -> Result<()> {
     }
 
     println!("\nFlexible match: {}", permissions.flexible_match);
+    println!("Path normalize: {}", permissions.path_normalize);
 
     Ok(())
 }
@@ -156,6 +174,7 @@ fn run_simulate_mode(
     debug: bool,
     explain: bool,
     flexible_match: bool,
+    no_path_normalize: bool,
 ) -> Result<()> {
     let permissions = PermissionSet {
         allow: allow_rules
@@ -167,6 +186,7 @@ fn run_simulate_mode(
             .filter_map(|s| parse_bash_rule(s))
             .collect(),
         flexible_match,
+        path_normalize: !no_path_normalize,
     };
 
     let result = judge(command, &permissions, debug, explain);
