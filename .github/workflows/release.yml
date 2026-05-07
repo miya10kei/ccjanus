@@ -24,6 +24,14 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Set Cargo.toml version from tag
+        shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          VERSION="${REF_NAME#v}"
+          sed -i.bak "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
+          rm Cargo.toml.bak
       - uses: houseabsolute/actions-rust-cross@576730dbfbb705690d43bd285987a3094fd84874 # v1
         with:
           command: build
